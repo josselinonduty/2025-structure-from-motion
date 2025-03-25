@@ -82,6 +82,7 @@ def main():
 
     if data_set == "globe":
         print("Rearranging images for globe dataset...")
+        image_paths = image_paths[31:15:-1] + image_paths[0:16]
         images = images[31:15:-1] + images[0:16]
     elif len(images) < 10:
         print(f"Warning: Expected at least 10 images, but only found {len(images)}.")
@@ -117,7 +118,7 @@ def main():
                 f"Warning: Descriptors missing for image pair ({i}, {i+1}). Skipping."
             )
             continue
-        matches[(i, i + 1)] = bf.match(descriptors[i], descriptors[i + 1])
+        matches[(i, i + 1)] = bf.knnMatch(descriptors[i], descriptors[i + 1], k=2)
         print(
             f"Number of matches between images {get_original_image_id(i)} and {get_original_image_id(i + 1)}: {len(matches[(i, i + 1)])}"
         )
@@ -306,8 +307,15 @@ def main():
         o3d.io.write_point_cloud(output_file, cloud)
         print(f"Point cloud saved to {output_file}")
 
-        # TODO: Implement Step 5 (Growing step) from the notebook if needed
+        if args.show_plots:
+            # Create a 3D visualization of the camera poses
+            o3d.visualization.draw_geometries([cloud])
 
+        # ------------------------------------------------------------------------
+        # Step 6: Growing the 3D Point Cloud (with more images)
+        # ------------------------------------------------------------------------
+
+        # Grow with the next image (best_pair_j -> best_pair_j + 1)
     except Exception as e:
         print(f"Error during reconstruction: {e}")
 
