@@ -7,42 +7,216 @@ using Structure from Motion (SfM) techniques. It uses OpenCV for feature extract
 matching, and triangulation.
 
 Usage:
-    python main.py [--data_in DATA_IN] [--data_set DATA_SET] [--data_set_ext DATA_SET_EXT] [--data_out DATA_OUT]
+    python main.py [--data_in DATA_IN] [--data_set DATA_SET] [--data_set_ext DATA_SET_EXT] [--data_out DATA_OUT] [--data_k DATA_K] [--show_plots]
 
 Example:
-    python main.py --data_in data --data_set castle-P30 --data_set_ext jpg --data_out out
+    python main.py --data_in data --data_set globe --data_set_ext jpg --data_out out --data_k K.txt --show_plots
 """
 
-import cv2
-import numpy as np
-import os
-import glob
+
 import argparse
+import glob
+import os
+
+import cv2
 from matplotlib import pyplot as plt
+import numpy as np
 import open3d as o3d
+from sklearn.cluster import DBSCAN
 
 
-def get_original_image_id(id):
-    """Convert internal image index to original image index"""
-    return 31 - id if id < 16 else id - 16
+def load_K(file_path: str) -> np.array:
+    """
+    Reads the Camera intrinsic parameters from the file
+
+    Returns
+    -------
+    np.array:
+        Camera intrinsic parameters
+    """
+
+    with open(file_path) as f:
+        K = np.array(
+            list(
+                (
+                    map(
+                        lambda x: list(map(lambda x: float(x), x.strip().split(" "))),
+                        f.read().split(None),
+                    )
+                )
+            )
+        ).reshape(3, 3)
+    return K
 
 
-def count_positive_depth(P1, P2, pts1, pts2, K):
-    """Count the number of triangulated points with positive depth in both camera frames"""
-    points_4d = cv2.triangulatePoints(K @ P1, K @ P2, pts1.T, pts2.T)
-    points_3d = (
-        points_4d[:3] / points_4d[3]
-    )  # Convert to 3D by dividing by homogeneous coord
+def load_D(file_path: str) -> np.array:
+    """
+    Reads the Camera distortion parameters from the file
+    If the file does not exist, it returns an array of zeros
 
-    # Convert to second camera's coordinate system
-    points_cam2 = P2[:, :3] @ points_3d + P2[:, 3].reshape(3, 1)
+    Returns
+    -------
+    np.array:
+        Camera distortion parameters
+    """
 
-    # Count points where Z > 0 in both camera frames
-    return np.sum((points_3d[2] > 0) & (points_cam2[2] > 0))
+    if not os.path.exists(file_path):
+        print(f"Warning: No distortion file found at {file_path}")
+        return np.zeros((1, 5), dtype=np.float32)
+
+    with open(file_path) as f:
+        D = np.array(
+            list(
+                (
+                    map(
+                        lambda x: list(map(lambda x: float(x), x.strip().split(" "))),
+                        f.read().split(None),
+                    )
+                )
+            )
+        ).reshape(1, 5)
+    return D
+
+
+def load_images(data_path: str, data_set: str, data_set_ext: str) -> tuple[list, list]:
+    """
+    Reads the set of images from the file
+
+    Returns
+    -------
+    list:
+        List of images
+    list:
+        List of image paths
+    """
+
+    images = []
+    image_paths = []
+
+    image_paths = sorted(
+        glob.glob(os.path.join(data_path, data_set, f"*.{data_set_ext}"))
+    )
+
+    if data_set == "globe":
+        image_paths = image_paths[31:15:-1] + image_paths[:16]
+
+    for image_path in image_paths:
+        images.append(cv2.imread(image_path, cv2.IMREAD_COLOR_RGB))
+    return images, image_paths
+
+
+def compute_features(images: list) -> tuple:
+    """
+    Computes the features from the images
+
+    Returns
+    -------
+    list:
+        List of keypoints
+    list:
+        List of descriptors
+    """
+
+    sift = cv2.SIFT_create()
+
+    keypoints = [None] * len(images)
+    descriptors = [None] * len(images)
+
+    for i, image in enumerate(images):
+        keypoints[i], descriptors[i] = sift.detectAndCompute(image, None)
+        print(f"Image {i}: {len(keypoints[i])} keypoints")
+
+    return keypoints, descriptors
+
+
+def compute_matches(keypoints: list, descriptors: list) -> list:
+    """
+    Computes the matches between the keypoints and descriptors
+
+    Returns
+    -------
+    dict:
+        Dict of matches
+    """
+
+    matcher = cv2.BFMatcher()
+    matches = {}
+
+    for i in range(len(keypoints) - 1):
+        res = matcher.knnMatch(descriptors[i], descriptors[i + 1], k=2)
+        features = [x for x, y in res if x.distance < 0.8 * y.distance]
+
+        matches[(i, i + 1)] = (
+            np.float32([keypoints[i][m.queryIdx].pt for m in features]),
+            np.float32(
+                [keypoints[i + 1][m.trainIdx].pt for m in features],
+            ),
+        )
+
+        print(f"Matches {i}-{i+1}: {len(features)}")
+
+    return matches
+
+
+def compute_shared(points_1, points_2, points_3):
+    """
+    Finds shared points between points_1 and points_2, and returns the corresponding points in points_3
+    Returns:
+        indices_1: Indices in points_1 that are common with points_2
+        indices_2: Corresponding indices in points_2
+        mask_points_2: points_2 excluding shared points
+        mask_points_3: points_3 excluding corresponding shared points
+    """
+    _, id_1, id_2 = np.intersect1d(
+        points_1.view([("", points_1.dtype)] * 2),
+        points_2.view([("", points_2.dtype)] * 2),
+        return_indices=True,
+    )
+
+    # Remove the matching entries from points_2 and points_3
+    mask = np.ones(len(points_2), dtype=bool)
+    mask[id_2] = False
+    mask_points_2 = points_2[mask]
+    mask_points_3 = points_3[mask]
+    return id_1, id_2, mask_points_2, mask_points_3
+
+
+def save_points(file_path: str, points: np.array, colors: np.array) -> None:
+    """
+    Saves the 3D points to a file
+
+    Parameters
+    ----------
+    file_path : str
+        File path
+    points : np.array
+        3D points
+    colors : np.array
+        Colors
+
+    Returns
+    -------
+    o3d.geometry.PointCloud:
+        Point cloud
+    """
+
+    # Remove outliers using clustering
+    clustering = DBSCAN(eps=0.25, min_samples=10).fit(points)
+    labels = clustering.labels_
+    mask = labels != -1
+    filtered_points = points[mask]
+    filtered_colors = colors[mask]
+
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(filtered_points)
+    cloud.colors = o3d.utility.Vector3dVector(filtered_colors / 255)
+
+    o3d.io.write_point_cloud(os.path.join(file_path), cloud, write_ascii=True)
+
+    return cloud
 
 
 def main():
-    # Parse command line arguments
     parser = argparse.ArgumentParser(description="Structure from Motion Pipeline")
     parser.add_argument(
         "--data_in", type=str, default="data", help="Input data directory"
@@ -53,6 +227,16 @@ def main():
     )
     parser.add_argument("--data_out", type=str, default="out", help="Output directory")
     parser.add_argument(
+        "--data_k", type=str, default="K.txt", help="Camera intrinsic file"
+    )
+    parser.add_argument(
+        "--data_d",
+        type=str,
+        default="D.txt",
+        help="Camera distortion file",
+        required=False,
+    )
+    parser.add_argument(
         "--show_plots", action="store_true", help="Display matplotlib plots"
     )
     args = parser.parse_args()
@@ -62,262 +246,172 @@ def main():
     data_set = args.data_set
     data_set_ext = args.data_set_ext
     data_out = args.data_out
+    data_k = args.data_k
+    data_d = args.data_d
 
-    # Create output directory if it doesn't exist
     os.makedirs(data_out, exist_ok=True)
 
-    # Load images
-    image_paths = sorted(
-        glob.glob(os.path.join(data_in, data_set, f"*.{data_set_ext}"))
+    K = load_K(os.path.join(data_in, data_set, data_k))
+    D = load_D(os.path.join(data_in, data_set, data_d))
+    images, _ = load_images(data_in, data_set, data_set_ext)
+
+    # ---------------------------------------
+    # Step 1: Feature Extraction and Matching
+    # ---------------------------------------
+
+    keypoints, descriptors = compute_features(images)
+    matches = compute_matches(keypoints, descriptors)
+
+    if args.show_plots:
+        image_keypoints = cv2.drawKeypoints(
+            images[0],
+            keypoints[0],
+            None,
+            flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS,
+        )
+
+        plt.figure(figsize=(15, 8))
+        plt.title("Keypoints on First Image")
+        plt.imshow(cv2.cvtColor(image_keypoints, cv2.COLOR_BGR2RGB))
+        plt.axis("off")
+        plt.tight_layout()
+        plt.show()
+
+    id_i, id_j = 0, 1
+    features_i, features_j = matches[(id_i, id_j)]
+
+    if args.show_plots:
+        image_matches = cv2.drawMatches(
+            images[id_i],
+            keypoints[id_i],
+            images[id_j],
+            keypoints[id_j],
+            [cv2.DMatch(i, i, 0) for i in range(len(features_i))],
+            None,
+            flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT,
+        )
+
+        plt.figure(figsize=(15, 8))
+        plt.title("Feature Matches Between First Two Images")
+        plt.imshow(cv2.cvtColor(image_matches, cv2.COLOR_BGR2RGB))
+        plt.axis("off")
+        plt.tight_layout()
+        plt.show()
+
+    # ---------------------------------------
+    # Step 2: Essential Matrix Estimation
+    # ---------------------------------------
+
+    E, mask = cv2.findEssentialMat(
+        features_i,
+        features_j,
+        K,
+        method=cv2.RANSAC,
+        prob=0.999,
+        threshold=0.5,
     )
 
-    if not image_paths:
-        print(
-            f"Error: No images found in {os.path.join(data_in, data_set)} with extension .{data_set_ext}"
-        )
-        return
+    features_i = features_i[mask.ravel() == 1]
+    features_j = features_j[mask.ravel() == 1]
 
-    print(f"Loading {len(image_paths)} images...")
-    images = [cv2.imread(img_path, cv2.IMREAD_COLOR_RGB) for img_path in image_paths]
+    # ---------------------------------------
+    # Step 3: Camera Pose Estimation
+    # ---------------------------------------
 
-    if data_set == "globe":
-        print("Rearranging images for globe dataset...")
-        image_paths = image_paths[31:15:-1] + image_paths[0:16]
-        images = images[31:15:-1] + images[0:16]
-    elif len(images) < 10:
-        print(f"Warning: Expected at least 10 images, but only found {len(images)}.")
-        print("Proceeding with the available images without rearrangement.")
+    _, R, t, mask = cv2.recoverPose(E, features_i, features_j, K)
+    features_i = features_i[mask.ravel() > 0]
+    features_j = features_j[mask.ravel() > 0]
 
-    print(f"Number of images: {len(images)}")
+    P_i = K @ np.hstack((np.eye(3), np.zeros((3, 1))))
+    P_j = K @ np.hstack((R, t))
 
-    # ------------------------------------------------------------------------
-    # Step 1: Feature Extraction and Matching
-    # ------------------------------------------------------------------------
-    print("Step 1: Extracting and matching features...")
+    # ---------------------------------------
+    # Step 4: Triangulation
+    # ---------------------------------------
 
-    # Initialize SIFT detector
-    sift = cv2.SIFT_create()
+    points = cv2.triangulatePoints(P_i, P_j, features_i.T, features_j.T)
+    points = cv2.convertPointsFromHomogeneous(points.T)
+    points = points.reshape(-1, 3)
 
-    # Extract features
-    keypoints = []
-    descriptors = []
-    for i, img in enumerate(images):
-        if img is None:
-            print(f"Warning: Image {i} failed to load. Skipping.")
-            continue
-        kp, des = sift.detectAndCompute(img, None)
-        keypoints.append(kp)
-        descriptors.append(des)
+    points = points[:, :3]
+    _, rodrigues_vector, t, mask = cv2.solvePnPRansac(
+        points, features_j, K, D, cv2.SOLVEPNP_ITERATIVE
+    )
+    R, _ = cv2.Rodrigues(rodrigues_vector)
+    features_i = features_i[mask[:, 0]]
+    points = points[mask[:, 0]]
+    features_j = features_j[mask[:, 0]]
 
-    # Match features between images
-    bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
-    matches = {}
-    for i in range(len(images) - 1):
-        if descriptors[i] is None or descriptors[i + 1] is None:
-            print(
-                f"Warning: Descriptors missing for image pair ({i}, {i+1}). Skipping."
-            )
-            continue
-        matches[(i, i + 1)] = bf.knnMatch(descriptors[i], descriptors[i + 1], k=2)
-        print(
-            f"Number of matches between images {get_original_image_id(i)} and {get_original_image_id(i + 1)}: {len(matches[(i, i + 1)])}"
-        )
+    # Save the first point cloud
+    points_cumulative = points
+    colors_cumulative = np.array(
+        [images[id_j][x, y] for (y, x) in np.array(features_j, dtype=np.int32)]
+    )
 
-    # Sort matches by distance
-    matches = {k: sorted(v, key=lambda x: x.distance) for k, v in matches.items()}
+    cloud = save_points(
+        os.path.join(data_out, data_set, f"matching-2.ply"),
+        points_cumulative,
+        colors_cumulative,
+    )
 
-    # Plot matches
     if args.show_plots:
-        for i in range(min(3, len(images) - 1)):
-            if (i, i + 1) not in matches:
-                continue
-            img_i = cv2.drawMatches(
-                images[i],
-                keypoints[i],
-                images[i + 1],
-                keypoints[i + 1],
-                matches[(i, i + 1)],
-                None,
-                flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS,
-            )
+        o3d.visualization.draw_geometries([cloud])
 
-            plt.figure(figsize=(12, 6))
-            plt.imshow(img_i)
-            plt.axis("off")
-            plt.title(
-                f"Initial matches: images {get_original_image_id(i)} and {get_original_image_id(i+1)}"
-            )
-            plt.show()
+    # ---------------------------------------
+    # Step 5: Structure from Motion
+    # ---------------------------------------
 
-    # ------------------------------------------------------------------------
-    # Step 2: Eliminate Outliers
-    # ------------------------------------------------------------------------
-    print("Step 2: Eliminating outliers...")
+    features_prev = features_j
+    for id_k in range(2, len(images)):
+        print(f"Processing image {id_k+1}")
+        features_j, features_k = matches[(id_j, id_k)]
 
-    # Remove outliers from matches using cv2.findHomography
-    for i, j in list(matches.keys()):  # Create a copy of keys to avoid runtime error
-        try:
-            kp1 = np.array([keypoints[i][m.queryIdx].pt for m in matches[(i, j)]])
-            kp2 = np.array([keypoints[j][m.trainIdx].pt for m in matches[(i, j)]])
+        shared_id_prev, shared_id_j, shared_j, shared_k = compute_shared(
+            features_prev, features_j, features_k
+        )
+        points_shared_k = features_k[shared_id_j]
 
-            if len(kp1) < 4 or len(kp2) < 4:
-                print(
-                    f"Warning: Not enough keypoints for homography estimation between images {i} and {j}. Skipping."
-                )
-                continue
+        points = points[shared_id_prev]
+        _, rodrigues_vector, t, mask = cv2.solvePnPRansac(
+            points, points_shared_k, K, D, cv2.SOLVEPNP_ITERATIVE
+        )
+        R, _ = cv2.Rodrigues(rodrigues_vector)
 
-            H, mask = cv2.findHomography(kp1, kp2, cv2.RANSAC, 5.0)
-            if H is None:
-                print(
-                    f"Warning: Homography estimation failed for images {i} and {j}. Skipping."
-                )
-                continue
+        P_k = K @ np.hstack((R, t))
 
-            matches[(i, j)] = [m for m, msk in zip(matches[(i, j)], mask) if msk]
-        except Exception as e:
-            print(f"Error in homography estimation for images {i} and {j}: {e}")
+        points = cv2.triangulatePoints(P_j, P_k, shared_j.T, shared_k.T)
+        points = cv2.convertPointsFromHomogeneous(points.T).reshape(-1, 3)
+        points_cumulative = np.vstack((points_cumulative, points))
 
-    # Plot matches after outlier removal
+        image_k = images[id_k]
+        colors = np.array(
+            [image_k[y, x] for (x, y) in np.array(shared_k, dtype=np.int32)]
+        )
+        colors_cumulative = np.vstack((colors_cumulative, colors))
+
+        id_j = id_k
+        features_i = features_j
+        features_prev = features_k
+        P_i = P_j
+        P_j = P_k
+
+        os.makedirs(os.path.join(data_out, f"{data_set}"), exist_ok=True)
+        cloud = save_points(
+            os.path.join(data_out, data_set, f"matching-{id_k+1}.ply"),
+            points_cumulative,
+            colors_cumulative,
+        )
+
+        if id_k < len(images) - 1:
+            points = cv2.triangulatePoints(P_i, P_j, features_i.T, features_prev.T)
+            points = cv2.convertPointsFromHomogeneous(points.T).reshape(-1, 3)
+
+    # ---------------------------------------
+    # Step 6: Point Cloud Visualization
+    # ---------------------------------------
+
     if args.show_plots:
-        for i in range(min(3, len(images) - 1)):
-            if (i, i + 1) not in matches:
-                continue
-            img_i = cv2.drawMatches(
-                images[i],
-                keypoints[i],
-                images[i + 1],
-                keypoints[i + 1],
-                matches[(i, i + 1)],
-                None,
-                flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS,
-            )
-
-            plt.figure(figsize=(12, 6))
-            plt.title(
-                f"Filtered matches between images {get_original_image_id(i)} and {get_original_image_id(i+1)}"
-            )
-            plt.imshow(img_i)
-            plt.axis("off")
-            plt.show()
-
-    # ------------------------------------------------------------------------
-    # Step 3: Essential Matrix Estimation
-    # ------------------------------------------------------------------------
-    print("Step 3: Estimating essential matrix...")
-
-    if not matches:
-        print("Error: No valid matches found between any image pairs. Exiting.")
-        return
-
-    # Find the best image pair (with the most matches)
-    try:
-        best_pair_idx = np.argmax([len(m) for m in matches.values()])
-        best_matches = list(matches.items())[best_pair_idx][1]
-
-        print(f"Number of matches in best pair: {len(best_matches)}")
-        best_pair_i, best_pair_j = list(matches.keys())[best_pair_idx]
-        print(
-            f"Best pair: ({get_original_image_id(best_pair_i)}, {get_original_image_id(best_pair_j)})"
-        )
-
-        # Get points from matches
-        pts1 = np.float32([keypoints[best_pair_i][m.queryIdx].pt for m in best_matches])
-        pts2 = np.float32([keypoints[best_pair_j][m.trainIdx].pt for m in best_matches])
-
-        # Compute the essential matrix
-        # Camera intrinsic matrix (typically should be calibrated per camera)
-        K = np.array(
-            [
-                [1698.873755, 0.000000, 971.7497705],
-                [0.000000, 1698.8796645, 647.7488275],
-                [0.000000, 0.000000, 1.000000],
-            ]
-        )
-        E, mask = cv2.findEssentialMat(
-            pts1, pts2, K, method=cv2.RANSAC, prob=0.999, threshold=5.0
-        )
-
-        num_outliers = np.sum(mask == 0)
-        print(f"Number of outliers: {num_outliers}")
-
-        num_inliers = np.sum(mask == 1)
-        print(f"Number of inliers: {num_inliers}")
-
-        # Plot the best pair of images
-        if args.show_plots:
-            img_best_pair = cv2.drawMatches(
-                images[best_pair_i],
-                keypoints[best_pair_i],
-                images[best_pair_j],
-                keypoints[best_pair_j],
-                best_matches,
-                None,
-                flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS,
-            )
-
-            plt.figure(figsize=(12, 6))
-            plt.title(
-                f"Best matches between images {get_original_image_id(best_pair_i)} and {get_original_image_id(best_pair_j)}"
-            )
-            plt.imshow(img_best_pair)
-            plt.axis("off")
-            plt.show()
-
-        # ------------------------------------------------------------------------
-        # Step 4: Camera Pose Estimation
-        # ------------------------------------------------------------------------
-        print("Step 4: Estimating camera poses...")
-
-        R1, R2, t = cv2.decomposeEssentialMat(E)
-
-        # Select the correct rotation and translation
-        P1 = np.hstack((np.eye(3), np.zeros((3, 1))))  # First camera at (I|0)
-        P2s = [
-            np.hstack((R1, t)),
-            np.hstack((R1, -t)),
-            np.hstack((R2, t)),
-            np.hstack((R2, -t)),
-        ]
-
-        # Select the best P2 based on positive depth count
-        P2 = max(P2s, key=lambda P2_i: count_positive_depth(P1, P2_i, pts1, pts2, K))
-
-        print("R:", P2[:, :3])
-        print("t:", P2[:, 3])
-
-        # Double check the results
-        _, R_, t_, mask = cv2.recoverPose(E, pts1, pts2, K)
-        assert np.allclose(R_, P2[:, :3])
-        assert np.allclose(t_.reshape(-1), P2[:, 3])
-
-        # ------------------------------------------------------------------------
-        # Step 5: 3D Reconstruction
-        # ------------------------------------------------------------------------
-        print("Step 5: Reconstructing 3D points...")
-
-        # Reconstruct 3D points using cv2.triangulatePoints
-        points = cv2.triangulatePoints(K @ P1, K @ P2, pts1.T, pts2.T)
-        points /= points[3]
-
-        # Create point cloud and save to file
-        cloud = o3d.geometry.PointCloud()
-        cloud.points = o3d.utility.Vector3dVector(points.T[:, :3])
-
-        output_file = os.path.join(data_out, f"{data_set}-2.ply")
-        o3d.io.write_point_cloud(output_file, cloud)
-        print(f"Point cloud saved to {output_file}")
-
-        if args.show_plots:
-            # Create a 3D visualization of the camera poses
-            o3d.visualization.draw_geometries([cloud])
-
-        # ------------------------------------------------------------------------
-        # Step 6: Growing the 3D Point Cloud (with more images)
-        # ------------------------------------------------------------------------
-
-        # Grow with the next image (best_pair_j -> best_pair_j + 1)
-    except Exception as e:
-        print(f"Error during reconstruction: {e}")
+        o3d.visualization.draw_geometries([cloud])
 
 
 if __name__ == "__main__":
