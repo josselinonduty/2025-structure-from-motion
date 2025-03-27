@@ -2,8 +2,12 @@
 
 ## Requirements
 
+Tested against Python 3.12
+
 ```bash
-pip install -r requirements.txt
+pip install matplotlib
+pip install opencv-python
+pip install open3d
 ```
 
 ## Sources
