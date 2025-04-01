@@ -14,9 +14,11 @@ objpoints = []  # 3D points in real world space
 imgpoints = []  # 2D points in image plane
 
 # Load images
-images = glob.glob("calibration/*.JPG")  # Adjust folder path if needed
+images = glob.glob("calibration/*.jpg")  # Adjust folder path if needed
 
 for fname in images:
+    print(f"Processing {fname}...")
+
     img = cv2.imread(fname)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
@@ -33,6 +35,8 @@ for fname in images:
         cv2.imshow("Corners", img)
         cv2.waitKey(500)
 
+        print(f"Found corners in {fname}")
+
 cv2.destroyAllWindows()
 
 # Perform camera calibration
@@ -47,4 +51,4 @@ print(dist)
 
 # Save results as txt files (matrix, no brackets, spaces as delimiters, new lines)
 np.savetxt("calibration/K.txt", mtx, delimiter=" ")
-np.savetxt("calibration/distortion.txt", dist, delimiter=" ")
+np.savetxt("calibration/D.txt", dist, delimiter=" ")

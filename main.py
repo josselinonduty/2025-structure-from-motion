@@ -7,10 +7,10 @@ using Structure from Motion (SfM) techniques. It uses OpenCV for feature extract
 matching, and triangulation.
 
 Usage:
-    python main.py [--data_in DATA_IN] [--data_set DATA_SET] [--data_set_ext DATA_SET_EXT] [--data_out DATA_OUT] [--data_k DATA_K] [--show_plots]
+    python main.py [--data_in DATA_IN] [--data_set DATA_SET] [--data_set_ext DATA_SET_EXT] [--data_out DATA_OUT] [--data_k DATA_K] [--data_d DATA_D] [--show_plots]
 
 Example:
-    python main.py --data_in data --data_set globe --data_set_ext jpg --data_out out --data_k K.txt --show_plots
+    python main.py --data_in data --data_set globe --data_set_ext jpg --data_out out --data_k K.txt --data_d D.txt --show_plots
 """
 
 
@@ -374,9 +374,11 @@ def main():
         points, features_j, K, D, cv2.SOLVEPNP_ITERATIVE
     )
     R, _ = cv2.Rodrigues(rodrigues_vector)
-    features_i = features_i[mask[:, 0]]
-    points = points[mask[:, 0]]
-    features_j = features_j[mask[:, 0]]
+
+    if mask is not None:
+        features_i = features_i[mask[:, 0]]
+        points = points[mask[:, 0]]
+        features_j = features_j[mask[:, 0]]
 
     camera_meshes.append(create_camera_mesh(t.ravel(), R))
 
@@ -409,7 +411,7 @@ def main():
         points_shared_k = features_k[shared_id_j]
 
         points = points[shared_id_prev]
-        _, rodrigues_vector, t, mask = cv2.solvePnPRansac(
+        _, rodrigues_vector, t, _ = cv2.solvePnPRansac(
             points, points_shared_k, K, D, cv2.SOLVEPNP_ITERATIVE
         )
         R, _ = cv2.Rodrigues(rodrigues_vector)
