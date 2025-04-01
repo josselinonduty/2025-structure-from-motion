@@ -143,8 +143,10 @@ def compute_matches(keypoints: list, descriptors: list) -> list:
     matches = {}
 
     for i in range(len(keypoints) - 1):
-        res = matcher.knnMatch(descriptors[i], descriptors[i + 1], k=2)
-        features = [x for x, y in res if x.distance < 0.8 * y.distance]
+        res = matcher.match(descriptors[i], descriptors[i + 1])
+        median = np.median([m.distance for m in res])
+        features = [x for x in res if x.distance < 0.7 * median]
+        features = sorted(features, key=lambda x: x.distance)
 
         matches[(i, i + 1)] = (
             np.float32([keypoints[i][m.queryIdx].pt for m in features]),
@@ -214,6 +216,36 @@ def save_points(file_path: str, points: np.array, colors: np.array) -> None:
     o3d.io.write_point_cloud(os.path.join(file_path), cloud, write_ascii=True)
 
     return cloud
+
+
+def create_camera_mesh(position, rotation, scale=0.25):
+    """
+    Creates a triangle mesh box representing the camera at the given position and rotation.
+
+    Parameters
+    ----------
+    position : np.array
+        Camera position (3D coordinates).
+    rotation : np.array
+        Camera rotation matrix (3x3).
+    scale : float
+        Scale of the camera mesh.
+
+    Returns
+    -------
+    o3d.geometry.TriangleMesh:
+        Triangle mesh box representing the camera.
+    """
+    camera_mesh = o3d.geometry.TriangleMesh.create_box(
+        width=2 * scale, height=scale, depth=0.1 * scale
+    )
+    camera_mesh.compute_vertex_normals()
+    camera_mesh.paint_uniform_color([1, 0, 0])
+
+    camera_mesh.rotate(rotation.T, center=(0, 0, 0))
+    camera_mesh.translate(-rotation.T @ position)
+
+    return camera_mesh
 
 
 def main():
@@ -325,6 +357,10 @@ def main():
     P_i = K @ np.hstack((np.eye(3), np.zeros((3, 1))))
     P_j = K @ np.hstack((R, t))
 
+    camera_meshes = []
+    camera_meshes.append(create_camera_mesh(np.zeros(3), np.eye(3)))  # First camera
+    camera_meshes.append(create_camera_mesh(t.ravel(), R))  # Second camera
+
     # ---------------------------------------
     # Step 4: Triangulation
     # ---------------------------------------
@@ -342,7 +378,8 @@ def main():
     points = points[mask[:, 0]]
     features_j = features_j[mask[:, 0]]
 
-    # Save the first point cloud
+    camera_meshes.append(create_camera_mesh(t.ravel(), R))
+
     points_cumulative = points
     colors_cumulative = np.array(
         [images[id_j][x, y] for (y, x) in np.array(features_j, dtype=np.int32)]
@@ -355,7 +392,7 @@ def main():
     )
 
     if args.show_plots:
-        o3d.visualization.draw_geometries([cloud])
+        o3d.visualization.draw_geometries([cloud, *camera_meshes])
 
     # ---------------------------------------
     # Step 5: Structure from Motion
@@ -378,6 +415,8 @@ def main():
         R, _ = cv2.Rodrigues(rodrigues_vector)
 
         P_k = K @ np.hstack((R, t))
+
+        camera_meshes.append(create_camera_mesh(t.ravel(), R))
 
         points = cv2.triangulatePoints(P_j, P_k, shared_j.T, shared_k.T)
         points = cv2.convertPointsFromHomogeneous(points.T).reshape(-1, 3)
@@ -411,7 +450,7 @@ def main():
     # ---------------------------------------
 
     if args.show_plots:
-        o3d.visualization.draw_geometries([cloud])
+        o3d.visualization.draw_geometries([cloud, *camera_meshes])
 
 
 if __name__ == "__main__":
