@@ -6,10 +6,10 @@ This script performs camera calibration using a checkerboard pattern.
 It calculates the camera matrix and distortion coefficients and saves them to files.
 
 Usage:
-    python calibrate.py [--data_in DATA_IN] [--data_set DATA_SET] [--data_set_ext DATA_SET_EXT] [--data_out DATA_OUT]
+    python calibrate.py [--board (X,Y)] [--data_in DATA_IN] [--data_set DATA_SET] [--data_set_ext DATA_SET_EXT] [--data_out DATA_OUT]
 
 Example:
-    python calibrate.py --data_in data --data_set otter --data_set_ext JPG --data_out data/otter
+    python calibrate.py --board 6,8 --data_in data --data_set otter --data_set_ext JPG --data_out data/otter
 """
 
 import argparse
@@ -22,6 +22,12 @@ import numpy as np
 
 def main():
     parser = argparse.ArgumentParser(description="Camera Calibration Script")
+    parser.add_argument(
+        "--board",
+        type=str,
+        default="6,8",
+        help="Checkerboard dimensions as X,Y",
+    )
     parser.add_argument(
         "--data_in", type=str, default="data", help="Input data directory"
     )
@@ -36,8 +42,8 @@ def main():
     )
     args = parser.parse_args()
 
-    # Define the dimensions of the checkerboard (number of inner corners per a chessboard row and column)
-    CHECKERBOARD = (6, 8)
+    CHECKERBOARD = tuple(map(int, args.board.split(",")) if args.board else (6, 8))
+    print(f"Checkerboard dimensions: {CHECKERBOARD}")
 
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
 
@@ -79,7 +85,6 @@ def main():
         print("No chessboard patterns found in any images. Calibration failed.")
         return
 
-    # Perform camera calibration
     _, K, D, _, _ = cv2.calibrateCamera(
         points_3d, points_2d, gray.shape[::-1], None, None
     )
@@ -87,7 +92,6 @@ def main():
     print("Camera matrix (K):\n", K)
     print("\nDistortion coefficients (D):\n", D)
 
-    # Save to files inside the output directory
     os.makedirs(args.data_out, exist_ok=True)
 
     K_path = os.path.join(args.data_out, "K.txt")
