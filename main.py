@@ -10,13 +10,14 @@ Usage:
     python main.py [--data_in DATA_IN] [--data_set DATA_SET] [--data_set_ext DATA_SET_EXT] [--data_out DATA_OUT] [--data_k DATA_K] [--data_d DATA_D] [--show_plots]
 
 Example:
-    python main.py --data_in data --data_set globe --data_set_ext jpg --data_out out --data_k K.txt --data_d D.txt --show_plots
+    python main.py --data_in data --data_set otter --data_set_ext JPG --data_out out --data_k K.txt --data_d D.txt --show_plots
 """
 
 
 import argparse
 import glob
 import os
+import random
 
 import cv2
 from matplotlib import pyplot as plt
@@ -123,7 +124,9 @@ def compute_features(images: list) -> tuple:
     descriptors = [None] * len(images)
 
     for i, image in enumerate(images):
-        keypoints[i], descriptors[i] = sift.detectAndCompute(image, None)
+        keypoints[i], descriptors[i] = sift.detectAndCompute(
+            cv2.cvtColor(image, cv2.COLOR_RGB2GRAY), None
+        )
         print(f"Image {i}: {len(keypoints[i])} keypoints")
 
     return keypoints, descriptors
@@ -143,10 +146,9 @@ def compute_matches(keypoints: list, descriptors: list) -> list:
     matches = {}
 
     for i in range(len(keypoints) - 1):
-        res = matcher.match(descriptors[i], descriptors[i + 1])
-        median = np.median([m.distance for m in res])
-        features = [x for x in res if x.distance < 0.7 * median]
-        features = sorted(features, key=lambda x: x.distance)
+        # Lowe's ratio test
+        res = matcher.knnMatch(descriptors[i], descriptors[i + 1], k=2)
+        features = [m for m, n in res if m.distance < 0.70 * n.distance]
 
         matches[(i, i + 1)] = (
             np.float32([keypoints[i][m.queryIdx].pt for m in features]),
@@ -253,7 +255,7 @@ def main():
     parser.add_argument(
         "--data_in", type=str, default="data", help="Input data directory"
     )
-    parser.add_argument("--data_set", type=str, default="globe", help="Dataset name")
+    parser.add_argument("--data_set", type=str, default="otter", help="Dataset name")
     parser.add_argument(
         "--data_set_ext", type=str, default="JPG", help="Dataset file extension"
     )
@@ -287,6 +289,25 @@ def main():
     D = load_D(os.path.join(data_in, data_set, data_d))
     images, _ = load_images(data_in, data_set, data_set_ext)
 
+    if args.show_plots and len(images) >= 2 and D is not None and np.any(D):
+        idx_samples = random.sample(range(len(images)), 2)
+        _, axs = plt.subplots(2, 2, figsize=(10, 8))
+
+        for i, idx in enumerate(idx_samples):
+            img = images[idx]
+            undistorted = cv2.undistort(img, K, D)
+
+            axs[i][0].imshow(img)
+            axs[i][0].set_title(f"Original Image {idx}")
+            axs[i][0].axis("off")
+
+            axs[i][1].imshow(undistorted)
+            axs[i][1].set_title(f"Undistorted Image {idx}")
+            axs[i][1].axis("off")
+
+        plt.tight_layout()
+        plt.show()
+
     # ---------------------------------------
     # Step 1: Feature Extraction and Matching
     # ---------------------------------------
@@ -304,7 +325,7 @@ def main():
 
         plt.figure(figsize=(15, 8))
         plt.title("Keypoints on First Image")
-        plt.imshow(cv2.cvtColor(image_keypoints, cv2.COLOR_BGR2RGB))
+        plt.imshow(image_keypoints)
         plt.axis("off")
         plt.tight_layout()
         plt.show()
@@ -325,7 +346,7 @@ def main():
 
         plt.figure(figsize=(15, 8))
         plt.title("Feature Matches Between First Two Images")
-        plt.imshow(cv2.cvtColor(image_matches, cv2.COLOR_BGR2RGB))
+        plt.imshow(image_matches)
         plt.axis("off")
         plt.tight_layout()
         plt.show()
@@ -370,8 +391,9 @@ def main():
     points = points.reshape(-1, 3)
 
     points = points[:, :3]
+
     _, rodrigues_vector, t, mask = cv2.solvePnPRansac(
-        points, features_j, K, D, cv2.SOLVEPNP_ITERATIVE
+        points, features_j, K, None, cv2.SOLVEPNP_ITERATIVE
     )
     R, _ = cv2.Rodrigues(rodrigues_vector)
 
@@ -412,7 +434,7 @@ def main():
 
         points = points[shared_id_prev]
         _, rodrigues_vector, t, _ = cv2.solvePnPRansac(
-            points, points_shared_k, K, D, cv2.SOLVEPNP_ITERATIVE
+            points, points_shared_k, K, None, cv2.SOLVEPNP_ITERATIVE
         )
         R, _ = cv2.Rodrigues(rodrigues_vector)
 

@@ -1,54 +1,106 @@
+#!/usr/bin/env python3
+"""
+Camera Calibration Script
+
+This script performs camera calibration using a checkerboard pattern.
+It calculates the camera matrix and distortion coefficients and saves them to files.
+
+Usage:
+    python calibrate.py [--data_in DATA_IN] [--data_set DATA_SET] [--data_set_ext DATA_SET_EXT] [--data_out DATA_OUT]
+
+Example:
+    python calibrate.py --data_in data --data_set otter --data_set_ext JPG --data_out data/otter
+"""
+
+import argparse
+import glob
+import os
+
 import cv2
 import numpy as np
-import glob
 
-# Define checkerboard size (number of inner corners per row and column)
-CHECKERBOARD = (6, 8)  # Adjust to match your pattern
 
-# Prepare object points
-objp = np.zeros((CHECKERBOARD[0] * CHECKERBOARD[1], 3), np.float32)
-objp[:, :2] = np.mgrid[0 : CHECKERBOARD[0], 0 : CHECKERBOARD[1]].T.reshape(-1, 2)
+def main():
+    parser = argparse.ArgumentParser(description="Camera Calibration Script")
+    parser.add_argument(
+        "--data_in", type=str, default="data", help="Input data directory"
+    )
+    parser.add_argument(
+        "--data_set", type=str, default="otter", help="Dataset name or subdirectory"
+    )
+    parser.add_argument(
+        "--data_set_ext", type=str, default="JPG", help="Dataset file extension"
+    )
+    parser.add_argument(
+        "--data_out", type=str, default="data/otter", help="Output directory"
+    )
+    args = parser.parse_args()
 
-# Arrays to store object points and image points from all images
-objpoints = []  # 3D points in real world space
-imgpoints = []  # 2D points in image plane
+    # Define the dimensions of the checkerboard (number of inner corners per a chessboard row and column)
+    CHECKERBOARD = (6, 8)
 
-# Load images
-images = glob.glob("calibration/*.jpg")  # Adjust folder path if needed
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
 
-for fname in images:
-    print(f"Processing {fname}...")
+    objp = np.zeros((CHECKERBOARD[0] * CHECKERBOARD[1], 3), np.float32)
+    objp[:, :2] = np.mgrid[0 : CHECKERBOARD[0], 0 : CHECKERBOARD[1]].T.reshape(-1, 2)
 
-    img = cv2.imread(fname)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    points_3d = []
+    points_2d = []
 
-    # Find the chessboard corners
-    ret, corners = cv2.findChessboardCorners(gray, CHECKERBOARD, None)
+    image_paths = os.path.join(
+        args.data_in, args.data_set, "calibration", f"*.{args.data_set_ext}"
+    )
+    images = glob.glob(image_paths)
 
-    # If found, add object points and image points
-    if ret:
-        objpoints.append(objp)
-        imgpoints.append(corners)
+    if not images:
+        print(f"No images found at {image_paths}")
+        return
 
-        # Draw and display corners
-        cv2.drawChessboardCorners(img, CHECKERBOARD, corners, ret)
-        cv2.imshow("Corners", img)
-        cv2.waitKey(500)
+    print(f"Found {len(images)} images for calibration")
 
-        print(f"Found corners in {fname}")
+    for fname in images:
+        print(f"Processing {fname}...")
 
-cv2.destroyAllWindows()
+        image = cv2.imread(fname)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-# Perform camera calibration
-ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
-    objpoints, imgpoints, gray.shape[::-1], None, None
-)
+        b, corners = cv2.findChessboardCorners(gray, CHECKERBOARD, None)
 
-print("Camera matrix:")
-print(mtx)
-print("\nDistortion coefficients:")
-print(dist)
+        if b:
+            points_3d.append(objp)
 
-# Save results as txt files (matrix, no brackets, spaces as delimiters, new lines)
-np.savetxt("calibration/K.txt", mtx, delimiter=" ")
-np.savetxt("calibration/D.txt", dist, delimiter=" ")
+            image_corners = cv2.cornerSubPix(
+                gray, corners, (11, 11), (-1, -1), criteria
+            )
+            points_2d.append(image_corners)
+            print(f"Found corners in {fname}")
+
+    if not points_3d:
+        print("No chessboard patterns found in any images. Calibration failed.")
+        return
+
+    # Perform camera calibration
+    _, K, D, _, _ = cv2.calibrateCamera(
+        points_3d, points_2d, gray.shape[::-1], None, None
+    )
+
+    print("Camera matrix (K):\n", K)
+    print("\nDistortion coefficients (D):\n", D)
+
+    # Save to files inside the output directory
+    os.makedirs(args.data_out, exist_ok=True)
+
+    K_path = os.path.join(args.data_out, "K.txt")
+    D_path = os.path.join(args.data_out, "D.txt")
+
+    np.savetxt(K_path, K, fmt="%f", delimiter=" ")
+
+    if D.shape[1] > 5:
+        D = D[:, :5]
+    np.savetxt(D_path, D, fmt="%f", delimiter=" ")
+
+    print(f"\nCalibration complete. Results saved to {K_path} and {D_path}")
+
+
+if __name__ == "__main__":
+    main()
