@@ -441,6 +441,7 @@ def main():
         [images[id_j][x, y] for (y, x) in np.array(features_j, dtype=np.int32)]
     )
 
+    os.makedirs(os.path.join(data_out, f"{data_set}"), exist_ok=True)
     cloud = save_points(
         os.path.join(data_out, data_set, f"matching-2.ply"),
         points_cumulative,
