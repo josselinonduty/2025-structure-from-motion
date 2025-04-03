@@ -7,10 +7,18 @@ using Structure from Motion (SfM) techniques. It uses OpenCV for feature extract
 matching, and triangulation.
 
 Usage:
-    python main.py [--data_in DATA_IN] [--data_set DATA_SET] [--data_set_ext DATA_SET_EXT] [--data_out DATA_OUT] [--data_k DATA_K] [--data_d DATA_D] [--show_plots]
+    python main.py
+        [--data_in DATA_IN]
+        [--data_set DATA_SET]
+        [--data_set_ext DATA_SET_EXT]
+        [--data_out DATA_OUT]
+        [--data_k DATA_K]
+        [--data_d DATA_D]
+        [--show_plots]
+        [--color_mode COLOR_MODE]
 
 Example:
-    python main.py --data_in data --data_set otter --data_set_ext JPG --data_out out --data_k K.txt --data_d D.txt --show_plots
+    python main.py --data_in data --data_set otter --data_set_ext JPG --data_out out --data_k K.txt --data_d D.txt --show_plots --color_mode rgb
 """
 
 
@@ -79,9 +87,22 @@ def load_D(file_path: str) -> np.array:
     return D
 
 
-def load_images(data_path: str, data_set: str, data_set_ext: str) -> tuple[list, list]:
+def load_images(
+    data_path: str, data_set: str, data_set_ext: str, color_mode: str
+) -> tuple[list, list]:
     """
     Reads the set of images from the file
+
+    Parameters
+    ----------
+    data_path : str
+        Path to the data directory
+    data_set : str
+        Name of the dataset
+    data_set_ext : str
+        File extension of the images
+    color_mode : str
+        Color mode to use ('bgr' or 'rgb')
 
     Returns
     -------
@@ -102,7 +123,10 @@ def load_images(data_path: str, data_set: str, data_set_ext: str) -> tuple[list,
         image_paths = image_paths[31:15:-1] + image_paths[:16]
 
     for image_path in image_paths:
-        images.append(cv2.imread(image_path, cv2.IMREAD_COLOR_RGB))
+        image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+        if color_mode.lower() == "rgb":
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        images.append(image)
     return images, image_paths
 
 
@@ -273,6 +297,13 @@ def main():
     parser.add_argument(
         "--show_plots", action="store_true", help="Display matplotlib plots"
     )
+    parser.add_argument(
+        "--color_mode",
+        type=str,
+        default="rgb",
+        choices=["bgr", "rgb"],
+        help="Color mode to use (bgr or rgb)",
+    )
     args = parser.parse_args()
 
     # Set paths
@@ -282,12 +313,13 @@ def main():
     data_out = args.data_out
     data_k = args.data_k
     data_d = args.data_d
+    color_mode = args.color_mode
 
     os.makedirs(data_out, exist_ok=True)
 
     K = load_K(os.path.join(data_in, data_set, data_k))
     D = load_D(os.path.join(data_in, data_set, data_d))
-    images, _ = load_images(data_in, data_set, data_set_ext)
+    images, _ = load_images(data_in, data_set, data_set_ext, color_mode)
 
     if args.show_plots and len(images) >= 2 and D is not None and np.any(D):
         idx_samples = random.sample(range(len(images)), 2)
