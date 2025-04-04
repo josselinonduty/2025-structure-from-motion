@@ -274,6 +274,50 @@ def create_camera_mesh(position, rotation, scale=0.25):
     return camera_mesh
 
 
+def compute_camera_pose(
+    features_i: np.array, features_j: np.array, K: np.array, E: np.array
+) -> tuple:
+    """
+    Computes the camera pose using the essential matrix.
+    Parameters
+    ----------
+    features_i : np.array
+        Features from the first image.
+    features_j : np.array
+        Features from the second image.
+    K : np.array
+        Camera intrinsic matrix.
+    E : np.array
+        Essential matrix.
+    Returns
+    -------
+    tuple:
+        Tuple containing the rotation and translation vectors.
+    """
+
+    R1, R2, t = cv2.decomposeEssentialMat(E)
+
+    P_i = np.hstack((np.eye(3), np.zeros((3, 1))))
+    P_js = [
+        np.hstack((R1, t)),
+        np.hstack((R1, -t)),
+        np.hstack((R2, t)),
+        np.hstack((R2, -t)),
+    ]
+
+    P_j = None
+    for P_j_k in P_js:
+        points_4d = cv2.triangulatePoints(P_i, P_j_k, features_i.T, features_j.T)
+        points_3d = cv2.convertPointsFromHomogeneous(points_4d.T).reshape(-1, 3)
+        if np.all(points_3d[:, 2] > 0):
+            P_j = P_j_k
+            break
+    if P_j is None:
+        raise ValueError("No valid camera pose found.")
+
+    return P_j[:3, :3], P_j[:3, 3].reshape(-1, 1)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Structure from Motion Pipeline")
     parser.add_argument(
@@ -406,6 +450,11 @@ def main():
     _, R, t, mask = cv2.recoverPose(E, features_i, features_j, K)
     features_i = features_i[mask.ravel() > 0]
     features_j = features_j[mask.ravel() > 0]
+
+    # Double check the result
+    R_prime, t_prime = compute_camera_pose(features_i, features_j, K, E)
+    assert np.allclose(R, R_prime)
+    assert np.allclose(t, t_prime)
 
     P_i = K @ np.hstack((np.eye(3), np.zeros((3, 1))))
     P_j = K @ np.hstack((R, t))
